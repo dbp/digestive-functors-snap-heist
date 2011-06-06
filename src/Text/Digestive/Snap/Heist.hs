@@ -9,7 +9,7 @@ module Text.Digestive.Snap.Heist
     , childErrors
     , snapEnvironment
     , eitherSnapForm
-    , runForm
+    , runFormHeist
     ) where
 
 
@@ -37,7 +37,6 @@ import qualified Text.Digestive.Forms as Forms
 import qualified Text.Digestive.Common as Common
 import Text.Digestive.Forms.Html
 
-
 import Control.Applicative ((<$>))
 
 import Snap.Types
@@ -53,24 +52,24 @@ instance FormInput SnapEnv () where
 --
 type SnapForm m = Form m SnapEnv
 
+-- HeistView has mapping from Ids to Names, then from Ids to Values, then Ids to Errors
+data HeistView = HeistView (M.Map FormId Text) (M.Map FormId [Text]) (M.Map FormId [Text])
 
-data HeistView m = HeistView (M.Map FormId Text) [(FormId, (Text -> (Text, Splice m)))]
-
-instance (Monad m) => Monoid (HeistView m) where
-  mempty = HeistView M.empty []
-  (HeistView idNameMap1 idSplice1) `mappend` (HeistView idNameMap2 idSplice2) = 
-    HeistView (idNameMap1 `mappend` idNameMap2) (idSplice1 `mappend` idSplice2)
+instance Monoid HeistView where
+  mempty = HeistView M.empty M.empty M.empty
+  (HeistView idNameMap1 nV1 nE1) `mappend` (HeistView idNameMap2 nV2 nE2) = 
+    HeistView (idNameMap1 `mappend` idNameMap2) (M.unionWith (++) nV1 nV2) (M.unionWith (++) nE1 nE2)
 
 
 input :: (Monad m, Functor m)
-         => Text -> Formlet m SnapEnv Text (HeistView m) String
+         => Text -> Formlet m SnapEnv Text HeistView String
 input name def = Form $ do
     allinp <- do env <- ask
                  case env of Environment f -> lift $ lift $ f $ zeroId "" -- since the snap-heist backend gives all regardless, any id
                              NoEnvironment -> return Nothing
     let val = fmap (B8.unpack . BS.concat) $  join $ fmap (M.lookup (TE.encodeUtf8 name) . unSnapEnv) allinp
     id' <- getFormId
-    let view' = HeistView (M.insert id' name M.empty) [(id', \n -> (T.concat [n, "-", "value"], return [X.TextNode (T.pack $ fromMaybe "" (val `mplus` def))]))]
+    let view' = HeistView (M.insert id' name M.empty) (M.insert id' [(T.pack $ fromMaybe "" (val `mplus` def))] M.empty) M.empty
         result' = Ok $ fromMaybe "" $  val
     return (View (const $ view'), result')
 
@@ -82,8 +81,9 @@ input name def = Form $ do
           -> Form m i e [(Text, Splice m)] a
 inputRead name error' = flip Forms.inputRead error' $ \id' inp ->
   [(T.concat [name, "-", "value"], return [X.TextNode (T.pack $ fromMaybe "" inp)])] 
+  -}
   
-inputCheckBox :: (Monad m, Functor m, FormInput i f)
+{-inputCheckBox :: (Monad m, Functor m, FormInput i f)
               => Text
               -> Bool
               -> Form m i e [(Text, Splice m)] Bool
@@ -91,22 +91,19 @@ inputCheckBox name inp = flip Forms.inputBool inp $ \id' inp' ->
   [(T.concat [name, "-", "value"], return [X.TextNode "checked"])]
 -}
 
-errorSplice :: Monad m => Text -> Splice m
-errorSplice error = runChildrenWithText [("error", error)]
 
-errorList :: Monad m => FormId -> [Text] -> (HeistView m)
-errorList id' errors' = HeistView M.empty [(id', \n -> (T.concat [n, "-", "error"], mapSplices errorSplice errors'))]
-
+errorList :: FormId -> [Text] -> HeistView
+errorList id' errors' = HeistView M.empty M.empty (M.insert id' errors' M.empty)
 
 errors :: Monad m
-       => Form m i Text (HeistView m) ()
+       => Form m i Text HeistView ()
 errors = Form $ do
     range <- getFormRange
     id' <- getFormId
     return (View (errorList id' . retainErrors range), Ok ())
 
 childErrors :: Monad m
-            => Form m i Text (HeistView m) ()
+            => Form m i Text HeistView ()
 childErrors = Form $ do
     range <- getFormRange
     id' <- getFormId
@@ -114,15 +111,20 @@ childErrors = Form $ do
 
 
 runFormHeist :: Monad m
-        => Form m i Text (HeistView m) a            -- ^ Form to run
+        => Form m i Text HeistView a            -- ^ Form to run
         -> String                    -- ^ Identifier for the form
         -> Environment m i           -- ^ Input environment
         -> m (View Text [(Text,Splice m)], Result Text a)  -- ^ Result
 runFormHeist form id' env = do (view', result) <- evalStateT (runReaderT (unForm form) env) $ unitRange $ zeroId id'
-                               return (View $ \e -> mapIds $ unView view' e, result)
+                               return (View $ \e -> mapIdsSplices $ unView view' e, result)
 
-mapIds (HeistView idsToNames idsAndSplices) = catMaybes $ map (\(i,mkS) -> liftM mkS $ M.lookup i idsToNames) idsAndSplices
-
+mapIdsSplices (HeistView idsToNames idVals idErrs) = catMaybes $ valueSplices idVals ++ errorSplices idErrs
+  where valueSplices vs = map valueSplice $ M.assocs vs
+        valueSplice (id',texts) = fmap (\n -> (T.concat [n, "-value"], return [X.TextNode  (T.concat texts)])) $ M.lookup id' idsToNames
+        errorSplices es = map errorSplice $ M.assocs es
+        errorSplice (id',errs) = fmap (\n -> (T.concat [n, "-errors"], mapSplices eS errs)) $ M.lookup id' idsToNames
+        eS error = runChildrenWithText [("error", error)]
+        
 
 -- | Environment that will send back all the parameters parsed by Snap
 -- does not care what it was asked for.
@@ -133,36 +135,35 @@ snapEnvironment = Environment $ \_ -> do
 
 -- | Run a snap form
 --
--- * When we are responding to a GET request, you will simply receive the form
---   as a view
+-- * When we are responding to a GET request, you will simply receive splices with default values
 --
 -- * When we are responding to another request method, the form data will be
---   used. When errors occur, you will receive the form as a view, otherwise,
+--   used. When errors occur, you will receive the error and value splices, otherwise,
 --   you will get the actual result
 --
 eitherSnapForm :: (MonadSnap m)
-               => SnapForm m Text (HeistView m) a  -- ^ Form
+               => SnapForm m Text HeistView a  -- ^ Form
                -> String            -- ^ Form name
                -> m (Either [(Text,Splice m)] a)    -- ^ Result
 eitherSnapForm form name = do
     method' <- rqMethod <$> getRequest
-    case method' of GET -> liftM Left $ viewForm form name
-                    _   -> eitherForm form name snapEnvironment
+    case method' of GET -> liftM Left $ viewFormHeist form name
+                    _   -> eitherFormHeist form name snapEnvironment
 
-eitherForm :: Monad m
-           => Form m i Text (HeistView m) a   -- ^ Form to run
-           -> String           -- ^ Identifier for the form
-           -> Environment m i  -- ^ Input environment
-           -> m (Either [(Text,Splice m)] a)   -- ^ Result
-eitherForm form id' env = do
+eitherFormHeist :: Monad m
+                => Form m i Text HeistView a   -- ^ Form to run
+                -> String           -- ^ Identifier for the form
+                -> Environment m i  -- ^ Input environment
+                -> m (Either [(Text,Splice m)] a)   -- ^ Result
+eitherFormHeist form id' env = do
     (view', result) <- runFormHeist form id' env
     return $ case result of Error e  -> Left $ unView view' e
                             Ok x     -> Right x
 
-viewForm :: Monad m
-         => Form m i Text (HeistView m) a  -- ^ Form to run
-         -> String          -- ^ Identifier for the form
-         -> m [(Text,Splice m)]            -- ^ Result
-viewForm form id' = do
+viewFormHeist :: Monad m
+              => Form m i Text HeistView a  -- ^ Form to run
+              -> String          -- ^ Identifier for the form
+              -> m [(Text,Splice m)]            -- ^ Result
+viewFormHeist form id' = do
     (view', _) <- runFormHeist form id' NoEnvironment
     return $ unView view' []
