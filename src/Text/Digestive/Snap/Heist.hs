@@ -71,9 +71,9 @@ input name def = Form $ do
                              NoEnvironment -> return Nothing
     let val = fmap (B8.unpack . BS.concat) $  join $ fmap (M.lookup (TE.encodeUtf8 name) . unSnapEnv) allinp
     id' <- getFormId
-    let view' errs = HeistView (M.insert id' name M.empty) (M.insert id' [(T.pack $ fromMaybe "" (val `mplus` def))] M.empty) (M.fromList (map (\(FormRange a _, e) -> (a,[e])) errs))
+    let view' =  HeistView (M.insert id' name M.empty) (M.insert id' [(T.pack $ fromMaybe "" (val `mplus` def))] M.empty) M.empty
         result' = Ok $ fromMaybe "" $  val
-    return (View view', result')
+    return (View (const view'), result')
 
 
 inputRead :: (Monad m, Functor m, Show a, Read a)
