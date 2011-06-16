@@ -5,6 +5,7 @@ module Text.Digestive.Snap.Heist
     ( HeistView
     , SnapForm
     , input
+    , inputRead
     , errors
     , childErrors
     , snapEnvironment
@@ -32,6 +33,7 @@ import qualified Data.ByteString.Char8 as B8
 
 import Text.Digestive.Types hiding (viewForm, eitherForm)
 import Text.Digestive.Result
+import Text.Digestive.Transform
 import Text.Digestive.Forms (FormInput (..))
 import qualified Text.Digestive.Forms as Forms
 import qualified Text.Digestive.Common as Common
@@ -65,23 +67,20 @@ input :: (Monad m, Functor m)
          => Text -> Formlet m SnapEnv Text HeistView String
 input name def = Form $ do
     allinp <- do env <- ask
-                 case env of Environment f -> lift $ lift $ f $ zeroId "" -- since the snap-heist backend gives all regardless, any id
+                 case env of Environment f -> lift $ lift $ f $ zeroId "" -- snap-heist backend gives all regardless of id
                              NoEnvironment -> return Nothing
     let val = fmap (B8.unpack . BS.concat) $  join $ fmap (M.lookup (TE.encodeUtf8 name) . unSnapEnv) allinp
     id' <- getFormId
-    let view' = HeistView (M.insert id' name M.empty) (M.insert id' [(T.pack $ fromMaybe "" (val `mplus` def))] M.empty) M.empty
+    let view' errs = HeistView (M.insert id' name M.empty) (M.insert id' [(T.pack $ fromMaybe "" (val `mplus` def))] M.empty) (M.fromList (map (\(FormRange a _, e) -> (a,[e])) errs))
         result' = Ok $ fromMaybe "" $  val
-    return (View (const $ view'), result')
+    return (View view', result')
 
 
-{-inputRead :: (Monad m, Functor m, FormInput i f, Show a, Read a)
+inputRead :: (Monad m, Functor m, Show a, Read a)
           => Text
-          -> e
-          -> Maybe a
-          -> Form m i e [(Text, Splice m)] a
-inputRead name error' = flip Forms.inputRead error' $ \id' inp ->
-  [(T.concat [name, "-", "value"], return [X.TextNode (T.pack $ fromMaybe "" inp)])] 
-  -}
+          -> Text
+          -> Formlet m SnapEnv Text HeistView a
+inputRead name error' def = input name (fmap show def) `transform` transformRead error'
   
 {-inputCheckBox :: (Monad m, Functor m, FormInput i f)
               => Text
