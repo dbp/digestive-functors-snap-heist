@@ -16,7 +16,7 @@ With that said, the reason that this exists at all is that from the perspective 
 
 ## Splices provided
 
-For each named input, these splices are created: "name-value" (just text of the value) and "name-error" which is a splice that renders subsplices with text assigned to the tag "error". ie: <name-errors><error/></name-errors>, since there is a list of errors provided. Future additions could allow that to be presented as text as well, concatenated with spaces or commas, in case someone wanted to use it as an attribute.
+For each named input, these splices are created: "name-value" (just text of the value) and "name-error" which is a splice that renders subsplices with text assigned to the tag "error". ie: \<name-errors\>\<error/\>\</name-errors\>, since there is a list of errors provided. Future additions could allow that to be presented as text as well, concatenated with spaces or commas, in case someone wanted to use it as an attribute.
 
 ## Usage (bare and somewhat incomplete, also strange to print out passwords, but...)
     import Text.Digestive.Types
